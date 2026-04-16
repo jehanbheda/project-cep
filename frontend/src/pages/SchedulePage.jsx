@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { getTodaySchedule, regenerateSchedule, completeTask, missTask, skipTask, submitFeedback } from '../services/api';
 import toast from 'react-hot-toast';
-import { Calendar, RefreshCw, Clock, CheckCircle, XCircle, SkipForward, TrendingUp, Award, Zap, ChevronLeft, ChevronRight, Sparkles, Trophy, Brain } from 'lucide-react';
+import { Calendar, RefreshCw, Clock, CheckCircle, XCircle, SkipForward, TrendingUp, Award, Zap, ChevronLeft, ChevronRight, Brain, Trophy, Target, AlertCircle, Info } from 'lucide-react';
 
 // Confetti Component
 function Confetti({ active }) {
@@ -16,7 +16,7 @@ function Confetti({ active }) {
         canvas.height = window.innerHeight;
 
         const particles = [];
-        const colors = ['#00FFFF', '#FF00FF', '#00FF88', '#FFCC00', '#FF3366'];
+        const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
 
         for (let i = 0; i < 150; i++) {
             particles.push({
@@ -79,6 +79,8 @@ export default function SchedulePage() {
     const [selectedAction, setSelectedAction] = useState(null);
     const [showConfetti, setShowConfetti] = useState(false);
     const [animateTaskId, setAnimateTaskId] = useState(null);
+    const [needsRegenerate, setNeedsRegenerate] = useState(false);
+    const [failedSkippedCount, setFailedSkippedCount] = useState(0);
     const [feedbackData, setFeedbackData] = useState({
         actualDuration: '',
         fatigueAfter: 5,
@@ -87,6 +89,7 @@ export default function SchedulePage() {
 
     useEffect(() => {
         fetchSchedule();
+        checkFailedSkippedTasks();
     }, []);
 
     const fetchSchedule = async () => {
@@ -94,11 +97,24 @@ export default function SchedulePage() {
         try {
             const data = await getTodaySchedule();
             setSchedule(data.schedule);
-            if (data.schedule?.sessions?.length > 0 && !selectedDate) {
-                const firstSession = data.schedule.sessions[0];
-                if (firstSession.startTime) {
-                    setSelectedDate(new Date(firstSession.startTime).toDateString());
+
+            const allSessions = data.schedule?.sessions || [];
+            const sessionsByDateMap = {};
+            allSessions.forEach(session => {
+                if (session.startTime) {
+                    const dateKey = new Date(session.startTime).toDateString();
+                    if (!sessionsByDateMap[dateKey]) sessionsByDateMap[dateKey] = [];
+                    sessionsByDateMap[dateKey].push(session);
                 }
+            });
+
+            setSessionsByDate(sessionsByDateMap);
+
+            const datesWithSessions = Object.keys(sessionsByDateMap);
+            if (datesWithSessions.length > 0 && !selectedDate) {
+                setSelectedDate(datesWithSessions[0]);
+            } else if (!selectedDate) {
+                setSelectedDate(new Date().toDateString());
             }
         } catch (error) {
             console.error('Failed to fetch schedule:', error);
@@ -107,26 +123,84 @@ export default function SchedulePage() {
         }
     };
 
+    const checkFailedSkippedTasks = async () => {
+        try {
+            const response = await fetch('/api/schedule/status', {
+                headers: {
+                    'Authorization': `Bearer ${localStorage.getItem('token')}`
+                }
+            });
+            if (response.ok) {
+                const data = await response.json();
+                setFailedSkippedCount(data.failedSkippedCount);
+                setNeedsRegenerate(data.failedSkippedCount > 0);
+            }
+        } catch (error) {
+            console.error('Failed to check task status:', error);
+        }
+    };
+
+    const [sessionsByDate, setSessionsByDate] = useState({});
+
     const handleRegenerate = async () => {
         toast.loading('Regenerating schedule...', { id: 'regenerate' });
         try {
-            await regenerateSchedule();
+            const response = await regenerateSchedule();
+            if (response.needsRegenerate !== undefined) {
+                setNeedsRegenerate(response.needsRegenerate);
+                setFailedSkippedCount(response.failedSkippedCount || 0);
+            }
             toast.success('Schedule regeneration started!', { id: 'regenerate' });
-            setTimeout(fetchSchedule, 3000);
+            setTimeout(() => {
+                fetchSchedule();
+                checkFailedSkippedTasks();
+            }, 3000);
         } catch (error) {
             toast.error('Failed to regenerate', { id: 'regenerate' });
         }
     };
 
-    const openFeedbackModal = (taskId, action) => {
-        setSelectedTask({ _id: taskId, title: 'Loading...' });
+    const openFeedbackModal = (taskId, action, taskTitle, goalTitle) => {
+        setSelectedTask({ _id: taskId, title: taskTitle, goalTitle: goalTitle });
         setSelectedAction(action);
-        setFeedbackData({
-            actualDuration: action === 'complete' ? '' : '0',
-            fatigueAfter: 5,
-            feedbackCodes: []
-        });
+
+        if (action === 'skip') {
+            if (window.confirm(`Are you sure you want to skip "${taskTitle}"?`)) {
+                handleSkipTask(taskId);
+            }
+            return;
+        }
+
+        if (action === 'complete') {
+            setFeedbackData({
+                actualDuration: '',
+                fatigueAfter: 5,
+                feedbackCodes: []
+            });
+        } else if (action === 'fail') {
+            setFeedbackData({
+                actualDuration: '',
+                fatigueAfter: 5,
+                feedbackCodes: []
+            });
+        }
+
         setShowFeedbackModal(true);
+    };
+
+    const handleSkipTask = async (taskId) => {
+        setAnimateTaskId(taskId);
+        try {
+            await skipTask(taskId);
+            toast('Task skipped. It will appear in next schedule.');
+            setTimeout(() => setAnimateTaskId(null), 500);
+            fetchSchedule();
+            checkFailedSkippedTasks();
+        } catch (error) {
+            console.error('Error:', error);
+            toast.error('Failed to skip task');
+            setAnimateTaskId(null);
+        }
     };
 
     const handleFeedbackSubmit = async () => {
@@ -143,19 +217,15 @@ export default function SchedulePage() {
                 toast.success('🎉 Task completed! Great job!');
                 setShowConfetti(true);
                 setTimeout(() => setShowConfetti(false), 2500);
+
             } else if (selectedAction === 'fail') {
                 await missTask(selectedTask._id);
                 toast.error('Task marked as failed. It will be rescheduled.');
-            } else if (selectedAction === 'skip') {
-                await skipTask(selectedTask._id);
-                toast('Task skipped. It will appear in next schedule.');
-            }
 
-            if (feedbackData.feedbackCodes.length > 0 || selectedAction !== 'complete') {
                 await submitFeedback({
                     taskId: selectedTask._id,
-                    outcome: selectedAction === 'complete' ? 'completed' : selectedAction === 'fail' ? 'failed' : 'skipped',
-                    actualDurationMin: selectedAction === 'complete' ? parseInt(feedbackData.actualDuration) : null,
+                    outcome: 'failed',
+                    actualDurationMin: null,
                     fatigueAfter: feedbackData.fatigueAfter,
                     feedback: feedbackData.feedbackCodes,
                 });
@@ -164,6 +234,7 @@ export default function SchedulePage() {
             setTimeout(() => setAnimateTaskId(null), 500);
             setShowFeedbackModal(false);
             fetchSchedule();
+            checkFailedSkippedTasks();
         } catch (error) {
             console.error('Error:', error);
             toast.error('Failed to process task');
@@ -203,364 +274,399 @@ export default function SchedulePage() {
         { code: 'F8', label: 'Bad context switch', description: 'Switching tasks was hard' },
     ];
 
+    const getDateRange = () => {
+        const today = new Date();
+        const dates = [];
+        for (let i = -30; i <= 30; i++) {
+            const date = new Date(today);
+            date.setDate(today.getDate() + i);
+            dates.push(date.toDateString());
+        }
+        return dates;
+    };
+
+    const allDates = getDateRange();
+
     if (loading) {
         return (
             <div className="flex items-center justify-center h-96">
-                <div className="relative">
-                    <div className="w-12 h-12 border-2 border-[#00FFFF]/30 border-t-[#00FFFF] rounded-full animate-spin"></div>
-                </div>
+                <div className="w-8 h-8 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin-slow"></div>
             </div>
         );
     }
 
-    const sessions = schedule?.sessions || [];
-    const sessionsByDate = {};
-    sessions.forEach(session => {
-        if (session.startTime) {
-            const dateKey = new Date(session.startTime).toDateString();
-            if (!sessionsByDate[dateKey]) sessionsByDate[dateKey] = [];
-            sessionsByDate[dateKey].push(session);
-        }
-    });
-
-    // Get actual dates that have sessions
-    const sessionDates = Object.keys(sessionsByDate).sort((a, b) => new Date(a) - new Date(b));
-
-    // Generate ALL dates between first and last session date
-    let allDates = [];
-    if (sessionDates.length > 0) {
-        const firstDate = new Date(sessionDates[0]);
-        const lastDate = new Date(sessionDates[sessionDates.length - 1]);
-        const currentDate = new Date(firstDate);
-
-        while (currentDate <= lastDate) {
-            allDates.push(currentDate.toDateString());
-            currentDate.setDate(currentDate.getDate() + 1);
-        }
-    }
-
-    // Use allDates for display (shows empty days too)
-    const dates = allDates.length > 0 ? allDates : sessionDates;
-
-    if (dates.length > 0 && !selectedDate) {
-        setSelectedDate(dates[0]);
-    }
-
     const currentDateSessions = selectedDate ? sessionsByDate[selectedDate] || [] : [];
     const hasNoTasks = currentDateSessions.length === 0;
-    const totalTasks = sessions.filter(s => s.taskId).length;
-    const completedCount = sessions.filter(s => s.status === 'completed').length;
+    const totalTasks = Object.values(sessionsByDate).flat().filter(s => s.taskId).length;
+    const completedCount = Object.values(sessionsByDate).flat().filter(s => s.status === 'completed').length;
     const completionRate = totalTasks > 0 ? Math.round((completedCount / totalTasks) * 100) : 0;
+
+    const selectedIndex = allDates.indexOf(selectedDate);
+    const visibleDates = allDates;
 
     return (
         <>
             <Confetti active={showConfetti} />
 
             <div>
-                <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-8 gap-4">
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-4 gap-4">
                     <div>
-                        <h1 className="text-3xl font-bold gradient-text mb-1">Neon Schedule</h1>
-                        <p className="text-[#888] flex items-center gap-2">
-                            <Brain className="w-4 h-4 text-[#00FFFF]" />
+                        <h1 className="text-3xl font-bold text-[var(--text-primary)] mb-1">Schedule</h1>
+                        <p className="text-[var(--text-secondary)] flex items-center gap-2">
+                            <Brain className="w-4 h-4" />
                             AI-optimized multi-day schedule
                         </p>
                     </div>
-                    <button onClick={handleRegenerate} className="btn-cyan flex items-center gap-2">
+                    <button onClick={handleRegenerate} className="btn-secondary flex items-center gap-2">
                         <RefreshCw className="w-4 h-4" />
                         Regenerate
                     </button>
                 </div>
 
+                {/* Notification Box */}
+                {needsRegenerate && (
+                    <div className="mb-4 p-4 rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 flex items-start gap-3">
+                        <AlertCircle className="w-5 h-5 text-yellow-600 dark:text-yellow-500 mt-0.5" />
+                        <div className="flex-1">
+                            <p className="text-sm font-medium text-yellow-800 dark:text-yellow-300">
+                                ⚠️ You have {failedSkippedCount} failed/skipped task{failedSkippedCount !== 1 ? 's' : ''}.
+                            </p>
+                            <p className="text-sm text-yellow-700 dark:text-yellow-400 mt-1">
+                                Click <strong>"Regenerate"</strong> to schedule {failedSkippedCount !== 1 ? 'them' : 'it'} again.
+                            </p>
+                        </div>
+                    </div>
+                )}
+
+                {!needsRegenerate && totalTasks > 0 && (
+                    <div className="mb-4 p-4 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 flex items-start gap-3">
+                        <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-500 mt-0.5" />
+                        <div className="flex-1">
+                            <p className="text-sm font-medium text-green-800 dark:text-green-300">
+                                ✅ All tasks are scheduled.
+                            </p>
+                            <p className="text-sm text-green-700 dark:text-green-400 mt-1">
+                                No pending issues. Keep up the good work!
+                            </p>
+                        </div>
+                    </div>
+                )}
+
+                {totalTasks === 0 && !needsRegenerate && (
+                    <div className="mb-4 p-4 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 flex items-start gap-3">
+                        <Info className="w-5 h-5 text-blue-600 dark:text-blue-500 mt-0.5" />
+                        <div className="flex-1">
+                            <p className="text-sm font-medium text-blue-800 dark:text-blue-300">
+                                📭 No tasks scheduled.
+                            </p>
+                            <p className="text-sm text-blue-700 dark:text-blue-400 mt-1">
+                                Create a goal to generate your personalized schedule.
+                            </p>
+                        </div>
+                    </div>
+                )}
+
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-                    <div className="glass-card p-4 group hover:scale-105 transition-all">
+                    <div className="card p-4">
                         <div className="flex items-center justify-between mb-2">
-                            <Clock className="w-6 h-6 text-[#00FFFF] group-hover:animate-pulse-ring" />
-                            <span className="text-2xl font-bold text-white">{totalTasks}</span>
+                            <Clock className="w-6 h-6 text-blue-500" />
+                            <span className="text-2xl font-bold text-[var(--text-primary)]">{totalTasks}</span>
                         </div>
-                        <p className="text-[#888] text-sm">Total Tasks</p>
+                        <p className="text-[var(--text-secondary)] text-sm">Total Tasks</p>
                     </div>
-                    <div className="glass-card p-4 group hover:scale-105 transition-all">
+                    <div className="card p-4">
                         <div className="flex items-center justify-between mb-2">
-                            <CheckCircle className="w-6 h-6 text-[#00FF88] group-hover:animate-pulse-ring" />
-                            <span className="text-2xl font-bold text-white">{completedCount}</span>
+                            <CheckCircle className="w-6 h-6 text-green-500" />
+                            <span className="text-2xl font-bold text-[var(--text-primary)]">{completedCount}</span>
                         </div>
-                        <p className="text-[#888] text-sm">Completed</p>
+                        <p className="text-[var(--text-secondary)] text-sm">Completed</p>
                     </div>
-                    <div className="glass-card p-4 group hover:scale-105 transition-all">
+                    <div className="card p-4">
                         <div className="flex items-center justify-between mb-2">
-                            <TrendingUp className="w-6 h-6 text-[#FF00FF] group-hover:animate-pulse-ring" />
-                            <span className="text-2xl font-bold text-white">{completionRate}%</span>
+                            <TrendingUp className="w-6 h-6 text-purple-500" />
+                            <span className="text-2xl font-bold text-[var(--text-primary)]">{completionRate}%</span>
                         </div>
-                        <p className="text-[#888] text-sm">Completion Rate</p>
+                        <p className="text-[var(--text-secondary)] text-sm">Completion Rate</p>
                     </div>
-                    <div className="glass-card p-4 group hover:scale-105 transition-all">
+                    <div className="card p-4">
                         <div className="flex items-center justify-between mb-2">
-                            <Award className="w-6 h-6 text-[#FFCC00] group-hover:animate-pulse-ring" />
-                            <span className="text-2xl font-bold text-white">{sessions.filter(s => s.taskId?.difficulty === 2).length}</span>
+                            <Award className="w-6 h-6 text-yellow-500" />
+                            <span className="text-2xl font-bold text-[var(--text-primary)]">
+                                {Object.values(sessionsByDate).flat().filter(s => s.taskId?.difficulty === 2).length}
+                            </span>
                         </div>
-                        <p className="text-[#888] text-sm">Hard Tasks</p>
+                        <p className="text-[var(--text-secondary)] text-sm">Hard Tasks</p>
                     </div>
                 </div>
 
-                {/* Date Selector - Shows ALL dates between first and last task */}
-                {dates.length > 0 && (
-                    <div className="glass-card p-4 mb-6">
-                        <div className="flex items-center justify-between">
-                            <button
-                                onClick={() => {
-                                    const currentIndex = dates.indexOf(selectedDate);
-                                    if (currentIndex > 0) setSelectedDate(dates[currentIndex - 1]);
-                                }}
-                                disabled={dates.indexOf(selectedDate) === 0}
-                                className="p-2 rounded-xl hover:bg-[#00FFFF]/10 disabled:opacity-30 transition-all"
-                            >
-                                <ChevronLeft className="w-5 h-5 text-[#00FFFF]" />
-                            </button>
+                {/* Date Selector */}
+                <div className="card p-4 mb-6">
+                    <div className="flex items-center justify-between">
+                        <button
+                            onClick={() => {
+                                const currentIndex = allDates.indexOf(selectedDate);
+                                if (currentIndex > 0) setSelectedDate(allDates[currentIndex - 1]);
+                            }}
+                            disabled={selectedIndex === 0}
+                            className="p-2 rounded-lg hover:bg-[var(--bg-secondary)] disabled:opacity-30 transition-all"
+                        >
+                            <ChevronLeft className="w-5 h-5 text-[var(--text-secondary)]" />
+                        </button>
 
-                            <div className="flex gap-2 overflow-x-auto px-2">
-                                {dates.map((date) => {
-                                    const dateObj = new Date(date);
-                                    const isSelected = selectedDate === date;
-                                    const hasTasks = sessionsByDate[date]?.length > 0;
-                                    return (
-                                        <button
-                                            key={date}
-                                            onClick={() => setSelectedDate(date)}
-                                            className={`px-4 py-2 rounded-xl transition-all whitespace-nowrap ${isSelected
-                                                    ? 'bg-gradient-to-r from-[#00FFFF] to-[#FF00FF] text-[#0A0A0F] font-bold shadow-[0_0_15px_#00FFFF]'
-                                                    : hasTasks
-                                                        ? 'bg-[#1A1A2E] text-[#00FFFF] border border-[#00FFFF]/30 hover:border-[#00FFFF]'
-                                                        : 'bg-[#1A1A2E]/50 text-[#555] border border-[#00FFFF]/10'
-                                                }`}
-                                        >
-                                            <div className="text-sm font-medium">
-                                                {dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                            </div>
-                                            <div className="text-xs opacity-70">
-                                                {dateObj.toLocaleDateString('en-US', { weekday: 'short' })}
-                                            </div>
-                                            {hasTasks && (
-                                                <div className="w-1.5 h-1.5 bg-[#00FFFF] rounded-full mx-auto mt-1"></div>
-                                            )}
-                                        </button>
-                                    );
-                                })}
-                            </div>
+                        <div className="flex gap-2 overflow-x-auto px-2" style={{ maxWidth: 'calc(100% - 80px)' }}>
+                            {visibleDates.map((date) => {
+                                const dateObj = new Date(date);
+                                const isSelected = selectedDate === date;
+                                const hasTasks = sessionsByDate[date]?.length > 0;
+                                const isToday = date === new Date().toDateString();
 
-                            <button
-                                onClick={() => {
-                                    const currentIndex = dates.indexOf(selectedDate);
-                                    if (currentIndex < dates.length - 1) setSelectedDate(dates[currentIndex + 1]);
-                                }}
-                                disabled={dates.indexOf(selectedDate) === dates.length - 1}
-                                className="p-2 rounded-xl hover:bg-[#00FFFF]/10 disabled:opacity-30 transition-all"
-                            >
-                                <ChevronRight className="w-5 h-5 text-[#00FFFF]" />
-                            </button>
+                                return (
+                                    <button
+                                        key={date}
+                                        onClick={() => setSelectedDate(date)}
+                                        className={`px-4 py-2 rounded-lg transition-all whitespace-nowrap ${isSelected
+                                                ? 'bg-[var(--accent)] text-white'
+                                                : hasTasks
+                                                    ? 'bg-[var(--bg-secondary)] text-[var(--text-primary)] hover:bg-[var(--border)]'
+                                                    : 'bg-[var(--bg-secondary)]/50 text-[var(--text-secondary)]'
+                                            } ${isToday && !isSelected ? 'border border-[var(--accent)]/50' : ''}`}
+                                    >
+                                        <div className="text-sm font-medium">
+                                            {dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                        </div>
+                                        <div className="text-xs opacity-70">
+                                            {dateObj.toLocaleDateString('en-US', { weekday: 'short' })}
+                                        </div>
+                                        {hasTasks && (
+                                            <div className="w-1.5 h-1.5 bg-[var(--accent)] rounded-full mx-auto mt-1"></div>
+                                        )}
+                                        {isToday && !hasTasks && (
+                                            <div className="w-1.5 h-1.5 bg-yellow-500 rounded-full mx-auto mt-1"></div>
+                                        )}
+                                    </button>
+                                );
+                            })}
                         </div>
+
+                        <button
+                            onClick={() => {
+                                const currentIndex = allDates.indexOf(selectedDate);
+                                if (currentIndex < allDates.length - 1) setSelectedDate(allDates[currentIndex + 1]);
+                            }}
+                            disabled={selectedIndex === allDates.length - 1}
+                            className="p-2 rounded-lg hover:bg-[var(--bg-secondary)] disabled:opacity-30 transition-all"
+                        >
+                            <ChevronRight className="w-5 h-5 text-[var(--text-secondary)]" />
+                        </button>
                     </div>
-                )}
+                </div>
 
-                {dates.length === 0 ? (
-                    <div className="glass-card p-12 text-center">
-                        <div className="w-20 h-20 bg-[#1A1A2E] rounded-full flex items-center justify-center mx-auto mb-4">
-                            <Brain className="w-10 h-10 text-[#00FFFF] animate-float" />
-                        </div>
-                        <h3 className="text-xl font-semibold text-white mb-2">No Schedule Yet</h3>
-                        <p className="text-[#888] mb-6">Create a goal to generate your personalized schedule</p>
-                        <a href="/goal" className="btn-cyan inline-flex items-center gap-2">
-                            <Sparkles className="w-4 h-4" />
-                            Create Goal
-                        </a>
+                <div className="mb-4 pb-2 border-b border-[var(--border)]">
+                    <h2 className="text-xl font-semibold text-[var(--text-primary)]">
+                        {formatDateHeader(selectedDate)}
+                    </h2>
+                    <p className="text-[var(--text-secondary)] text-sm mt-1">
+                        {hasNoTasks ? 'No tasks scheduled' : `${currentDateSessions.length} tasks scheduled`}
+                    </p>
+                </div>
+
+                {hasNoTasks ? (
+                    <div className="card p-8 text-center">
+                        <p className="text-[var(--text-secondary)]">📭 No tasks scheduled for this day</p>
+                        <p className="text-[var(--text-secondary)] text-sm mt-2">Enjoy your free time!</p>
                     </div>
                 ) : (
-                    <>
-                        <div className="mb-4 pb-2 border-b border-[#00FFFF]/20">
-                            <h2 className="text-xl font-semibold gradient-text">
-                                {formatDateHeader(selectedDate)}
-                            </h2>
-                            <p className="text-[#888] text-sm mt-1">
-                                {hasNoTasks ? 'No tasks scheduled' : `${currentDateSessions.length} tasks scheduled`}
-                            </p>
-                        </div>
+                    <div className="space-y-3">
+                        {currentDateSessions.map((session) => {
+                            const isTask = !!session.taskId;
+                            const status = session.status;
+                            const isCompleted = status === 'completed';
+                            const isFailed = status === 'failed';
+                            const isSkipped = status === 'skipped';
+                            const isAnimating = animateTaskId === session.taskId?._id;
+                            const goalTitle = session.goalTitle || 'Unknown Goal';
 
-                        {hasNoTasks ? (
-                            <div className="glass-card p-8 text-center">
-                                <p className="text-[#888]">📭 No tasks scheduled for this day</p>
-                                <p className="text-[#555] text-sm mt-2">Enjoy your free time!</p>
-                            </div>
-                        ) : (
-                            <div className="space-y-3">
-                                {currentDateSessions.map((session) => {
-                                    const isTask = !!session.taskId;
-                                    const status = session.status;
-                                    const isCompleted = status === 'completed';
-                                    const isFailed = status === 'failed';
-                                    const isSkipped = status === 'skipped';
-                                    const isAnimating = animateTaskId === session.taskId?._id;
-
-                                    return (
-                                        <div
-                                            key={session._id}
-                                            className={`glass-card p-4 transition-all duration-300 ${isAnimating ? 'bg-[#00FF88]/10 border-[#00FF88]' : ''
-                                                } ${isCompleted ? 'border-l-4 border-l-[#00FF88]' : isFailed ? 'border-l-4 border-l-[#FF3366]' : ''}`}
-                                        >
-                                            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                                                <div className="flex-1">
-                                                    <div className="flex items-center gap-2 mb-2 flex-wrap">
-                                                        {isTask ? (
-                                                            <>
-                                                                <span className={`font-semibold text-white ${isCompleted ? 'line-through opacity-70' : ''}`}>
-                                                                    {session.taskId?.title}
-                                                                </span>
-                                                                {session.taskId?.difficulty === 2 && (
-                                                                    <span className="badge-hard">🔥 Hard</span>
-                                                                )}
-                                                                {session.taskId?.difficulty === 1 && (
-                                                                    <span className="badge-medium">📘 Medium</span>
-                                                                )}
-                                                                {session.taskId?.difficulty === 0 && (
-                                                                    <span className="badge-easy">📗 Easy</span>
-                                                                )}
-                                                            </>
-                                                        ) : (
-                                                            <span className="font-semibold text-white flex items-center gap-2">
-                                                                <Zap className="w-4 h-4 text-[#FFCC00]" />
-                                                                Break Time
-                                                            </span>
-                                                        )}
-                                                        {isCompleted && <span className="badge-completed">✓ Completed</span>}
-                                                        {isFailed && <span className="badge-failed">✗ Failed</span>}
-                                                        {isSkipped && <span className="badge-pending">⏭ Skipped</span>}
-                                                    </div>
-
-                                                    <div className="flex flex-wrap gap-4 text-sm text-[#888]">
-                                                        <span className="flex items-center gap-1">
-                                                            <Clock className="w-3 h-3" />
-                                                            {formatTime(session.startTime)} - {formatTime(session.endTime)}
+                            return (
+                                <div
+                                    key={session._id}
+                                    className={`card p-4 transition-all duration-300 ${isAnimating ? 'bg-green-50 dark:bg-green-900/20 border-green-500' : ''
+                                        } ${isCompleted ? 'border-l-4 border-l-green-500' : isFailed ? 'border-l-4 border-l-red-500' : ''}`}
+                                >
+                                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                                        <div className="flex-1">
+                                            <div className="flex items-center gap-2 mb-2 flex-wrap">
+                                                {isTask ? (
+                                                    <>
+                                                        <span className={`font-semibold text-[var(--text-primary)] ${isCompleted ? 'line-through opacity-70' : ''}`}>
+                                                            {session.taskId?.title}
                                                         </span>
-                                                        {isTask && (
-                                                            <>
-                                                                <span>📊 {session.scheduledDurationMin} min</span>
-                                                                <span>📚 {session.taskId?.taskType}</span>
-                                                            </>
+                                                        <span className="text-xs px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400 flex items-center gap-1">
+                                                            <Target className="w-3 h-3" />
+                                                            {goalTitle}
+                                                        </span>
+                                                        {session.taskId?.difficulty === 2 && (
+                                                            <span className="badge-hard">🔥 Hard</span>
                                                         )}
-                                                    </div>
-                                                </div>
+                                                        {session.taskId?.difficulty === 1 && (
+                                                            <span className="badge-medium">📘 Medium</span>
+                                                        )}
+                                                        {session.taskId?.difficulty === 0 && (
+                                                            <span className="badge-easy">📗 Easy</span>
+                                                        )}
+                                                    </>
+                                                ) : (
+                                                    <span className="font-semibold text-[var(--text-primary)] flex items-center gap-2">
+                                                        <Zap className="w-4 h-4 text-yellow-500" />
+                                                        Break Time
+                                                    </span>
+                                                )}
+                                                {isCompleted && <span className="badge-completed">✓ Completed</span>}
+                                                {isFailed && <span className="badge-failed">✗ Failed</span>}
+                                                {isSkipped && <span className="badge-pending">⏭ Skipped</span>}
+                                            </div>
 
-                                                {isTask && !isCompleted && !isFailed && !isSkipped && (
-                                                    <div className="flex gap-2">
-                                                        <button
-                                                            onClick={() => openFeedbackModal(session.taskId._id, 'complete')}
-                                                            className="btn-green text-sm px-3 py-1.5 flex items-center gap-1"
-                                                        >
-                                                            <CheckCircle className="w-4 h-4" />
-                                                            Complete
-                                                        </button>
-                                                        <button
-                                                            onClick={() => openFeedbackModal(session.taskId._id, 'fail')}
-                                                            className="btn-red text-sm px-3 py-1.5 flex items-center gap-1"
-                                                        >
-                                                            <XCircle className="w-4 h-4" />
-                                                            Fail
-                                                        </button>
-                                                        <button
-                                                            onClick={() => openFeedbackModal(session.taskId._id, 'skip')}
-                                                            className="btn-yellow text-sm px-3 py-1.5 flex items-center gap-1"
-                                                        >
-                                                            <SkipForward className="w-4 h-4" />
-                                                            Skip
-                                                        </button>
-                                                    </div>
+                                            <div className="flex flex-wrap gap-4 text-sm text-[var(--text-secondary)]">
+                                                <span className="flex items-center gap-1">
+                                                    <Clock className="w-3 h-3" />
+                                                    {formatTime(session.startTime)} - {formatTime(session.endTime)}
+                                                </span>
+                                                {isTask && (
+                                                    <>
+                                                        <span>📊 {session.scheduledDurationMin} min</span>
+                                                        <span>📚 {session.taskId?.taskType}</span>
+                                                    </>
                                                 )}
                                             </div>
                                         </div>
-                                    );
-                                })}
-                            </div>
-                        )}
-                    </>
+
+                                        {isTask && !isCompleted && !isFailed && !isSkipped && (
+                                            <div className="flex gap-2">
+                                                <button
+                                                    onClick={() => openFeedbackModal(session.taskId._id, 'complete', session.taskId?.title, goalTitle)}
+                                                    className="btn-success text-sm px-3 py-1.5 flex items-center gap-1"
+                                                >
+                                                    <CheckCircle className="w-4 h-4" />
+                                                    Complete
+                                                </button>
+                                                <button
+                                                    onClick={() => openFeedbackModal(session.taskId._id, 'fail', session.taskId?.title, goalTitle)}
+                                                    className="btn-danger text-sm px-3 py-1.5 flex items-center gap-1"
+                                                >
+                                                    <XCircle className="w-4 h-4" />
+                                                    Fail
+                                                </button>
+                                                <button
+                                                    onClick={() => openFeedbackModal(session.taskId._id, 'skip', session.taskId?.title, goalTitle)}
+                                                    className="btn-secondary text-sm px-3 py-1.5 flex items-center gap-1"
+                                                >
+                                                    <SkipForward className="w-4 h-4" />
+                                                    Skip
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
                 )}
 
-                {/* Feedback Modal */}
+                {/* Feedback Modal - Only for Complete and Fail */}
                 {showFeedbackModal && selectedTask && (
-                    <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-50 p-4">
-                        <div className="glass-card max-w-md w-full p-6 animate-slideIn">
+                    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+                        <div className="card max-w-md w-full p-6 animate-slideIn">
                             <div className="flex items-center gap-3 mb-6">
-                                <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${selectedAction === 'complete' ? 'bg-[#00FF88]/20' : selectedAction === 'fail' ? 'bg-[#FF3366]/20' : 'bg-[#FFCC00]/20'
+                                <div className={`w-12 h-12 rounded-lg flex items-center justify-center ${selectedAction === 'complete' ? 'bg-green-100 dark:bg-green-900/30' :
+                                        'bg-red-100 dark:bg-red-900/30'
                                     }`}>
-                                    {selectedAction === 'complete' ? <Trophy className="w-6 h-6 text-[#00FF88]" /> : selectedAction === 'fail' ? <XCircle className="w-6 h-6 text-[#FF3366]" /> : <SkipForward className="w-6 h-6 text-[#FFCC00]" />}
+                                    {selectedAction === 'complete' ?
+                                        <Trophy className="w-6 h-6 text-green-600 dark:text-green-400" /> :
+                                        <XCircle className="w-6 h-6 text-red-600 dark:text-red-400" />
+                                    }
                                 </div>
                                 <div>
-                                    <h2 className="text-xl font-bold text-white">{selectedAction === 'complete' ? 'Complete Task' : selectedAction === 'fail' ? 'Task Failed' : 'Skip Task'}</h2>
-                                    <p className="text-[#888] text-sm">{selectedTask.title === 'Loading...' ? 'Task' : selectedTask.title}</p>
+                                    <h2 className="text-xl font-bold text-[var(--text-primary)]">
+                                        {selectedAction === 'complete' ? 'Complete Task' : 'Task Failed'}
+                                    </h2>
+                                    <p className="text-[var(--text-secondary)] text-sm">{selectedTask.title}</p>
+                                    <p className="text-xs text-purple-500 mt-1 flex items-center gap-1">
+                                        <Target className="w-3 h-3" />
+                                        Goal: {selectedTask.goalTitle}
+                                    </p>
                                 </div>
                             </div>
 
+                            {/* Complete: Only show duration input */}
                             {selectedAction === 'complete' && (
                                 <div className="mb-4">
-                                    <label className="block text-sm font-medium text-[#AAA] mb-2">Actual Duration (minutes)</label>
+                                    <label className="block text-sm font-medium text-[var(--text-secondary)] mb-2">Actual Duration (minutes)</label>
                                     <input
                                         type="number"
                                         value={feedbackData.actualDuration}
                                         onChange={(e) => setFeedbackData({ ...feedbackData, actualDuration: e.target.value })}
-                                        className="input-neon"
+                                        className="input"
                                         placeholder="e.g., 45"
+                                        autoFocus
                                     />
                                 </div>
                             )}
 
-                            <div className="mb-4">
-                                <label className="block text-sm font-medium text-[#AAA] mb-2">Fatigue Level</label>
-                                <div className="flex gap-2 flex-wrap">
-                                    {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(level => (
-                                        <button
-                                            key={level}
-                                            type="button"
-                                            onClick={() => setFeedbackData({ ...feedbackData, fatigueAfter: level })}
-                                            className={`w-9 h-9 rounded-xl font-medium transition-all ${feedbackData.fatigueAfter === level
-                                                ? 'bg-gradient-to-r from-[#00FFFF] to-[#FF00FF] text-[#0A0A0F] shadow-[0_0_10px_#00FFFF]'
-                                                : 'bg-[#1A1A2E] text-[#AAA] hover:border-[#00FFFF]/50 border border-[#00FFFF]/20'
-                                                }`}
-                                        >
-                                            {level}
-                                        </button>
-                                    ))}
-                                </div>
-                                <p className="text-xs text-[#666] mt-2">1 = Energetic, 10 = Exhausted</p>
-                            </div>
+                            {/* Fail: Show fatigue slider and feedback codes */}
+                            {selectedAction === 'fail' && (
+                                <>
+                                    <div className="mb-4">
+                                        <label className="block text-sm font-medium text-[var(--text-secondary)] mb-2">Fatigue Level</label>
+                                        <div className="flex gap-2 flex-wrap">
+                                            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(level => (
+                                                <button
+                                                    key={level}
+                                                    type="button"
+                                                    onClick={() => setFeedbackData({ ...feedbackData, fatigueAfter: level })}
+                                                    className={`w-9 h-9 rounded-lg font-medium transition-all ${feedbackData.fatigueAfter === level
+                                                            ? 'bg-[var(--accent)] text-white'
+                                                            : 'bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:bg-[var(--border)]'
+                                                        }`}
+                                                >
+                                                    {level}
+                                                </button>
+                                            ))}
+                                        </div>
+                                        <p className="text-xs text-[var(--text-secondary)] mt-2">1 = Energetic, 10 = Exhausted</p>
+                                    </div>
 
-                            <div className="mb-6">
-                                <label className="block text-sm font-medium text-[#AAA] mb-3">What happened?</label>
-                                <div className="space-y-2">
-                                    {feedbackOptions.map(option => (
-                                        <label
-                                            key={option.code}
-                                            className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${feedbackData.feedbackCodes.includes(option.code)
-                                                ? 'border-[#00FFFF] bg-[#00FFFF]/10'
-                                                : 'border-[#00FFFF]/20 hover:border-[#00FFFF]/50'
-                                                }`}
-                                        >
-                                            <input
-                                                type="checkbox"
-                                                checked={feedbackData.feedbackCodes.includes(option.code)}
-                                                onChange={() => toggleFeedbackCode(option.code)}
-                                                className="mt-0.5 accent-[#00FFFF]"
-                                            />
-                                            <div>
-                                                <div className="font-medium text-white text-sm">{option.code} — {option.label}</div>
-                                                <div className="text-xs text-[#888]">{option.description}</div>
-                                            </div>
-                                        </label>
-                                    ))}
-                                </div>
-                            </div>
+                                    <div className="mb-6">
+                                        <label className="block text-sm font-medium text-[var(--text-secondary)] mb-3">What went wrong?</label>
+                                        <div className="space-y-2">
+                                            {feedbackOptions.map(option => (
+                                                <label
+                                                    key={option.code}
+                                                    className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${feedbackData.feedbackCodes.includes(option.code)
+                                                            ? 'border-[var(--accent)] bg-[var(--accent)]/10'
+                                                            : 'border-[var(--border)] hover:border-[var(--accent)]/50'
+                                                        }`}
+                                                >
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={feedbackData.feedbackCodes.includes(option.code)}
+                                                        onChange={() => toggleFeedbackCode(option.code)}
+                                                        className="mt-0.5 accent-[var(--accent)]"
+                                                    />
+                                                    <div>
+                                                        <div className="font-medium text-[var(--text-primary)] text-sm">{option.code} — {option.label}</div>
+                                                        <div className="text-xs text-[var(--text-secondary)]">{option.description}</div>
+                                                    </div>
+                                                </label>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </>
+                            )}
 
                             <div className="flex gap-3">
-                                <button onClick={handleFeedbackSubmit} className="flex-1 btn-cyan">
+                                <button onClick={handleFeedbackSubmit} className="flex-1 btn-primary">
                                     Submit
                                 </button>
-                                <button onClick={() => setShowFeedbackModal(false)} className="flex-1 btn-outline">
+                                <button onClick={() => setShowFeedbackModal(false)} className="flex-1 btn-secondary">
                                     Cancel
                                 </button>
                             </div>

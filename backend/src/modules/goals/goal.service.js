@@ -9,52 +9,15 @@ const resolveDependencyName = (task, allTasks) => {
   return depTask ? depTask.title : null
 }
 
-const sendToRL = async (userId, goal, savedTasks, redisClient) => {
-  const totalMinutes = savedTasks.reduce((sum, task) => sum + task.baseDurationMin, 0)
-  const estimatedTotalHours = Math.round((totalMinutes / 60) * 10) / 10
-
-  const rlPayload = {
-    goal_id:  goal._id.toString(),
-    user_id:  userId.toString(),
-    decomposition_metadata: {
-      model_used:                process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
-      total_tasks:               savedTasks.length,
-      estimated_total_hours:     estimatedTotalHours,
-      decomposition_confidence:  0.87
-    },
-    tasks: savedTasks.map(task => ({
-      task_id:             task._id.toString(),
-      task_name:           task.title,
-      task_type:           task.taskType,
-      difficulty:          task.difficulty,
-      base_duration_min:   task.baseDurationMin,
-      deadline:            goal.deadline
-                             ? new Date(goal.deadline).toISOString()
-                             : null,
-      dependency_task_name: resolveDependencyName(task, savedTasks),
-      topic_name:          task.topicName || '',
-      priority_hint:       task.priority,
-      source:              'new',
-      attempt_count:       0,
-      priority_boost:      0,
-      last_failed_reason:  null,
-      llm_order:           task.orderIndex
-    }))
-  }
-
-  await redisClient.lpush('rl_task_queue', JSON.stringify(rlPayload))
-  logger.info(`RL payload sent — goal: ${goal._id}, tasks: ${savedTasks.length}, hours: ${estimatedTotalHours}`)
-}
-
 const confirmGoal = async (userId, goalData, tasks, redisClient) => {
   const goal = new Goal({
     userId,
-    title:       goalData.title,
-    goalType:    goalData.goalType || 'other',
-    deadline:    goalData.deadline || null,
+    title: goalData.title,
+    goalType: goalData.goalType || 'other',
+    deadline: goalData.deadline || null,
     hoursPerDay: goalData.hoursPerDay || 2,
-    status:      'active',
-    totalTasks:  tasks.length,
+    status: 'active',
+    totalTasks: tasks.length,
     completedTasks: 0,
     completionRate: 0
   })
@@ -63,34 +26,37 @@ const confirmGoal = async (userId, goalData, tasks, redisClient) => {
   logger.info(`Goal saved: ${goal._id} — "${goal.title}"`)
 
   const taskDocs = tasks.map(task => ({
-    goalId:          goal._id,
+    goalId: goal._id,
     userId,
-    title:           task.title,
-    description:     task.description || '',
-    taskType:        task.task_type,
-    difficulty:      task.difficulty,
+    title: task.title,
+    description: task.description || '',
+    taskType: task.task_type,
+    difficulty: task.difficulty,
     baseDurationMin: task.base_duration_min,
-    priority:        task.priority,
-    orderIndex:      task.order_index,
-    frequency:       task.frequency,
-    repeatDays:      task.repeat_days || [],
-    phase:           task.phase,
-    dependsOn:       task.depends_on || [],
-    topicName:       task.topic_name || '',
-    status:          'pending',
-    source:          'new',
-    attemptCount:    0,
-    priorityBoost:   0,
-    skipCount:       0
+    priority: task.priority,
+    orderIndex: task.order_index,
+    frequency: task.frequency,
+    repeatDays: task.repeat_days || [],
+    phase: task.phase,
+    dependsOn: task.depends_on || [],
+    topicName: task.topic_name || '',
+    status: 'pending',
+    source: 'new',
+    attemptCount: 0,
+    priorityBoost: 0,
+    skipCount: 0
   }))
 
   const savedTasks = await Task.insertMany(taskDocs)
   logger.info(`${savedTasks.length} tasks saved for goal ${goal._id}`)
 
+  // Trigger full regenerate to merge with existing goals by deadline
   if (redisClient) {
-    await sendToRL(userId, goal, savedTasks, redisClient)
+    const scheduleService = require('../schedule/schedule.service.js')
+    const result = await scheduleService.regenerateSchedule(userId, redisClient)
+    logger.info(`Full schedule regeneration triggered after goal creation. Total tasks: ${result.totalTasks}`)
   } else {
-    logger.warn('Redis client not available — RL payload not sent')
+    logger.warn('Redis client not available — schedule regeneration not triggered')
   }
 
   return { goal, tasks: savedTasks }
@@ -101,7 +67,7 @@ const getMyGoals = async (userId) => {
 
   const goalsWithStats = await Promise.all(
     goals.map(async (goal) => {
-      const totalTasks     = await Task.countDocuments({ goalId: goal._id })
+      const totalTasks = await Task.countDocuments({ goalId: goal._id })
       const completedTasks = await Task.countDocuments({ goalId: goal._id, status: 'completed' })
       return {
         ...goal,
@@ -130,7 +96,8 @@ const getGoalById = async (goalId, userId) => {
   return { ...goal, tasks }
 }
 
-const deleteGoal = async (goalId, userId) => {
+
+const deleteGoal = async (goalId, userId, redisClient) => {
   const goal = await Goal.findOne({ _id: goalId, userId })
 
   if (!goal) {
@@ -139,46 +106,66 @@ const deleteGoal = async (goalId, userId) => {
     throw err
   }
 
-  const totalTasks     = await Task.countDocuments({ goalId })
+  const totalTasks = await Task.countDocuments({ goalId })
   const completedTasks = await Task.countDocuments({ goalId, status: 'completed' })
   const completionRate = totalTasks > 0
     ? Math.round((completedTasks / totalTasks) * 100)
     : 0
 
+  // SOFT DELETE: Update goal status to 'deleted'
   await Goal.findByIdAndUpdate(goalId, {
     completionRate,
     totalTasks,
     completedTasks,
-    status: 'abandoned'
+    status: 'deleted'
   })
 
-  const deletedTasks = await Task.deleteMany({ goalId })
-  logger.info(`Deleted ${deletedTasks.deletedCount} tasks for goal ${goalId}`)
+  // SOFT DELETE: Mark tasks as 'deleted'
+  await Task.updateMany(
+    { goalId },
+    { $set: { status: 'deleted', source: 'deleted' } }
+  )
 
-  await Goal.findByIdAndDelete(goalId)
-  logger.info(`Goal deleted: ${goalId}`)
+  // DELETE all scheduled sessions for this goal
+  const ScheduledSession = require('../../models/ScheduleSession.js')
+  const deletedSessions = await ScheduledSession.deleteMany({ goalId })
+  logger.info(`Deleted ${deletedSessions.deletedCount} scheduled sessions for goal ${goalId}`)
 
-  return { completionRate, tasksDeleted: deletedTasks.deletedCount }
+  logger.info(`Soft deleted goal: ${goalId} - "${goal.title}", ${totalTasks} tasks marked as deleted`)
+
+  // Trigger schedule regeneration after deletion
+  if (redisClient) {
+    const scheduleService = require('../schedule/schedule.service.js')
+    await scheduleService.regenerateSchedule(userId, redisClient)
+    logger.info(`Schedule regeneration triggered after goal deletion`)
+  }
+
+  return {
+    completionRate,
+    tasksDeleted: totalTasks,
+    sessionsDeleted: deletedSessions.deletedCount,
+    message: 'Goal soft deleted successfully'
+  }
 }
 
 const getWeeklyStats = async (userId) => {
-  const now        = new Date()
-  const dayOfWeek  = now.getDay()
+  const now = new Date()
+  const dayOfWeek = now.getDay()
   const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1
-  const weekStart  = new Date(now)
+  const weekStart = new Date(now)
   weekStart.setDate(now.getDate() - daysToMonday)
   weekStart.setHours(0, 0, 0, 0)
 
   const totalThisWeek = await Task.countDocuments({
     userId,
-    createdAt:  { $gte: weekStart },
-    frequency:  { $in: ['once', 'near_deadline'] }
+    createdAt: { $gte: weekStart },
+    frequency: { $in: ['once', 'near_deadline'] }
   })
 
   const completedThisWeek = await Task.countDocuments({
     userId,
     completedAt: { $gte: weekStart },
-    status:      'completed'
+    status: 'completed'
   })
 
   const weeklyRate = totalThisWeek > 0

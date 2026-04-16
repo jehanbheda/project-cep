@@ -3,10 +3,12 @@ interface.py
 ------------
 Jehan's implementation of the Q-table read/write contract.
 Connects to MongoDB. Called by agents.py and updater.py.
+
+FIX #5: Use local system time (no timezone)
 """
 
 from pymongo import MongoClient
-from datetime import datetime, timezone
+from datetime import datetime
 import os
 
 # ─────────────────────────────────────────────
@@ -32,13 +34,14 @@ DEFAULT_SIGMA = {
 # ─────────────────────────────────────────────
 
 _client = None
-_db     = None
+_db = None
+
 
 def _get_db():
     global _client, _db
     if _db is None:
         _client = MongoClient(os.getenv("MONGODB_URI"))
-        _db     = _client["manovyavastha"]
+        _db = _client["manovyavastha"]
     return _db
 
 
@@ -51,15 +54,15 @@ def qtable_reader(collection: str, user_id: str, state: dict) -> list[dict]:
     Returns all action rows for (user_id, state).
     Never returns empty list — missing actions get zeroed defaults.
     """
-    db  = _get_db()
+    db = _get_db()
     col = db[collection]
 
     existing = list(col.find(
-        { "user_id": user_id, "state": state },
-        { "_id": 0, "action": 1, "q_value": 1, "visit_count": 1, "sigma": 1 }
+        {"user_id": user_id, "state": state},
+        {"_id": 0, "action": 1, "q_value": 1, "visit_count": 1, "sigma": 1}
     ))
 
-    existing_map = { row["action"]: row for row in existing }
+    existing_map = {row["action"]: row for row in existing}
 
     result = []
     for action in ACTION_SPACES[collection]:
@@ -93,9 +96,10 @@ def qtable_writer(
     Upserts the row for (user_id, state, action).
     Creates if not exists. Updates if exists.
     """
-    db  = _get_db()
+    db = _get_db()
     col = db[collection]
 
+    # FIX #5: Use local time, not UTC
     col.update_one(
         {
             "user_id": user_id,
@@ -107,7 +111,7 @@ def qtable_writer(
                 "q_value":     new_q,
                 "visit_count": new_visit_count,
                 "sigma":       new_sigma,
-                "updated_at":  datetime.now(timezone.utc)
+                "updated_at":  datetime.now()
             },
             "$setOnInsert": {
                 "user_id": user_id,

@@ -4,7 +4,7 @@ main.py
 Entry point for the RL engine.
 Listens on Redis queues and processes messages.
 
-Run with: python main.py
+FIX #5: Use local system time (no timezone)
 """
 
 from bson import ObjectId
@@ -15,7 +15,7 @@ from orchestrator import generate_schedule, regenerate_schedule
 import os
 import json
 import redis
-from datetime import datetime, timezone
+from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -45,11 +45,15 @@ db = client["manovyavastha"]
 # ─────────────────────────────────────────────
 
 def parse_datetime(dt_str):
-    """Convert ISO string to datetime object"""
+    """Convert ISO string to naive datetime object (local time)."""
     if not dt_str:
         return None
     try:
-        return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        # FIX #5: Remove timezone info, keep as naive local time
+        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        if dt.tzinfo:
+            dt = dt.replace(tzinfo=None)
+        return dt
     except:
         return None
 
@@ -95,8 +99,8 @@ def save_scheduled_sessions(user_id, goal_id, sections, scheduled_date):
             "status":           "scheduled",
             "rlProcessed":      False,
 
-            "createdAt": datetime.now(timezone.utc),
-            "updatedAt": datetime.now(timezone.utc),
+            "createdAt": datetime.now(),
+            "updatedAt": datetime.now(),
         }
         session_docs.append(doc)
 
@@ -135,9 +139,11 @@ def handle_rl_task_queue(message):
             task["deadline"] = parse_datetime(task["deadline"])
         else:
             # no deadline — set far future
-            task["deadline"] = datetime(2099, 12, 31, tzinfo=timezone.utc)
+            task["deadline"] = datetime(2099, 12, 31)
 
-    now = datetime.now(timezone.utc)
+    # FIX #5: Use local time, not UTC
+    now = datetime.now()
+
     user_state = {"fatigue_raw": 3}  # default — later from user profile
 
     result = generate_schedule(
@@ -182,21 +188,22 @@ def handle_schedule_queue(message):
     user_id = data["user_id"]
     pending_tasks = data.get("pending_tasks", [])
     failed_tasks = data.get("failed_tasks", [])
-    now_str = data.get("now", datetime.now(timezone.utc).isoformat())
+    now_str = data.get("now", datetime.now().isoformat())
     user_state = data.get("user_state", {"fatigue_raw": 3})
 
     print(f"\n[SCHEDULE QUEUE] Regeneration for user {user_id}")
     print(f"  Pending tasks: {len(pending_tasks)}")
     print(f"  Failed tasks:  {len(failed_tasks)}")
 
-    now = parse_datetime(now_str) or datetime.now(timezone.utc)
+    # FIX #5: Use local time, not UTC
+    now = parse_datetime(now_str) or datetime.now()
 
     # convert deadline strings to datetime
     for task in pending_tasks + failed_tasks:
         if task.get("deadline"):
             task["deadline"] = parse_datetime(task["deadline"])
         else:
-            task["deadline"] = datetime(2099, 12, 31, tzinfo=timezone.utc)
+            task["deadline"] = datetime(2099, 12, 31)
 
     result = regenerate_schedule(
         user_id=user_id,
@@ -211,12 +218,12 @@ def handle_schedule_queue(message):
 
     if sections:
         # delete old unstarted sessions first
+        # FIX #2 & #4: Delete ALL future sessions for this user (global regenerate)
+        today_start = datetime(now.year, now.month, now.day)
         db.scheduledsessions.delete_many({
             "userId": ObjectId(user_id),
             "status": "scheduled",
-            "scheduledDate": {
-                "$gte": datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-            }
+            "scheduledDate": {"$gte": today_start}
         })
 
         # need goal_id — get from first task's goalId

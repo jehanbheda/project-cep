@@ -4,6 +4,8 @@ agents.py
 Pure decision functions for the Cognitive-Aware Task Scheduler.
 No reward logic. No DB calls. No side effects.
 All Q-table I/O goes through the interface defined in interface.py.
+
+FIX #5: No timezone changes needed (using naive datetimes)
 """
 
 import random
@@ -96,11 +98,11 @@ def gaussian_select(q_rows: list[dict], agent_name: str) -> str:
     Sigma is taken as max sigma across all rows — prevents cold neighbor starvation.
     Falls back to uniform if all Q-values are equal (pure cold start).
     """
-    actions   = [row["action"]      for row in q_rows]
-    q_values  = [row["q_value"]     for row in q_rows]
-    visits    = [row["visit_count"] for row in q_rows]
+    actions = [row["action"] for row in q_rows]
+    q_values = [row["q_value"] for row in q_rows]
+    visits = [row["visit_count"] for row in q_rows]
 
-    best_pos  = q_values.index(max(q_values))
+    best_pos = q_values.index(max(q_values))
 
     # use max visit_count across rows to derive sigma — avoids collapsing on best action's sigma
     max_visits = max(visits)
@@ -125,7 +127,8 @@ def duration_agent(
     difficulty: int,
     deadline_pressure: int,
     base_duration_min: int,
-    efficiency_profile: dict,      # {"theory": {"multiplier": 1.0, "visit_count": 2}, ...}
+    # {"theory": {"multiplier": 1.0, "visit_count": 2}, ...}
+    efficiency_profile: dict,
 ) -> dict:
     """
     Decides duration multiplier for this task.
@@ -154,7 +157,7 @@ def duration_agent(
             multiplier = 1.0
         cold_start = True
     else:
-        action     = gaussian_select(q_rows, "duration")
+        action = gaussian_select(q_rows, "duration")
         multiplier = float(action.replace("x", ""))
         cold_start = False
 
@@ -174,11 +177,16 @@ def duration_agent(
 
 # maps hour of day → block index
 def _hour_to_block(hour: int) -> int:
-    if hour < 7:  return 0
-    if hour < 9:  return 1
-    if hour < 11: return 2
-    if hour < 13: return 3
-    if hour < 17: return 4
+    if hour < 7:
+        return 0
+    if hour < 9:
+        return 1
+    if hour < 11:
+        return 2
+    if hour < 13:
+        return 3
+    if hour < 17:
+        return 4
     return 5
 
 
@@ -210,7 +218,7 @@ def time_preference_score(
 
     # best learned block for this task type at this hour
     best_action = max(q_rows, key=lambda r: r["q_value"])
-    best_block  = int(best_action["action"].replace("block_", ""))
+    best_block = int(best_action["action"].replace("block_", ""))
 
     # reward if current hour is already in the preferred block, penalize otherwise
     # scaled so max influence is ±0.5
@@ -306,7 +314,7 @@ def break_agent(
         }
 
     if _is_cold_start(valid_rows):
-        action     = _break_heuristic(
+        action = _break_heuristic(
             fatigue_level, consecutive_minutes,
             prev_task_difficulty, next_task_difficulty
         )
@@ -315,7 +323,7 @@ def break_agent(
             action = "no_break"
         cold_start = True
     else:
-        action     = gaussian_select(valid_rows, "break")
+        action = gaussian_select(valid_rows, "break")
         cold_start = False
 
     break_duration_min = action_minutes(action)
@@ -406,19 +414,19 @@ def score_task(
     user_id: str,
     virtual_now: datetime,
 ) -> float:
-    slack            = _compute_slack(task, virtual_now)
-    cognitive_score  = _cognitive_fit_score(task, user_state)
-    retry_score      = _retry_score(task)
+    slack = _compute_slack(task, virtual_now)
+    cognitive_score = _cognitive_fit_score(task, user_state)
+    retry_score = _retry_score(task)
     starvation_score = task.get("priority_boost", 0) * 0.3
-    context_score    = _context_switch_score(task, prev_task_type, user_id)
-    time_score       = time_preference_score(task, user_id, virtual_now)
+    context_score = _context_switch_score(task, prev_task_type, user_id)
+    time_score = time_preference_score(task, user_id, virtual_now)
 
     secondary = (
-        cognitive_score  * 1.0 +
-        retry_score      * 1.5 +
+        cognitive_score * 1.0 +
+        retry_score * 1.5 +
         starvation_score * 1.0 +
-        context_score    * 1.0 +
-        time_score       * 0.5
+        context_score * 1.0 +
+        time_score * 0.5
     )
 
     if slack < URGENT_SLACK_HOURS:
@@ -446,11 +454,12 @@ def run_selector(
         (scheduled: list[dict], unschedulable: list[dict])
         unschedulable = tasks that would breach deadline no matter when scheduled
     """
-    remaining     = [dict(t) for t in pool]  # shallow copy — don't mutate caller's pool
-    scheduled     = []
+    remaining = [dict(t)
+                 for t in pool]  # shallow copy — don't mutate caller's pool
+    scheduled = []
     unschedulable = []
     prev_task_type = None
-    virtual_now    = now
+    virtual_now = now
 
     while remaining:
 
@@ -487,7 +496,8 @@ def run_selector(
             selected = min(
                 candidates,
                 key=lambda t: (
-                    -score_task(t, prev_task_type, user_state, user_id, virtual_now),
+                    -score_task(t, prev_task_type, user_state,
+                                user_id, virtual_now),
                     t["deadline"],
                 )
             )

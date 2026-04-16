@@ -64,9 +64,7 @@ export default function CalendarPage() {
     if (loading) {
         return (
             <div className="flex items-center justify-center h-96">
-                <div className="relative">
-                    <div className="w-12 h-12 border-2 border-[#00FFFF]/30 border-t-[#00FFFF] rounded-full animate-spin"></div>
-                </div>
+                <div className="w-8 h-8 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin-slow"></div>
             </div>
         );
     }
@@ -77,35 +75,35 @@ export default function CalendarPage() {
         <div className="animate-slideIn">
             <div className="flex items-center justify-between mb-6">
                 <div>
-                    <h1 className="text-3xl font-bold gradient-text mb-1">Calendar View</h1>
-                    <p className="text-[#888] flex items-center gap-2">
-                        <CalendarIcon className="w-4 h-4 text-[#00FFFF]" />
+                    <h1 className="text-3xl font-bold text-[var(--text-primary)] mb-1">Calendar View</h1>
+                    <p className="text-[var(--text-secondary)] flex items-center gap-2">
+                        <CalendarIcon className="w-4 h-4" />
                         Monthly schedule overview
                     </p>
                 </div>
                 <div className="flex items-center gap-2">
                     <button
                         onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1))}
-                        className="p-2 rounded-xl bg-[#1A1A2E] border border-[#00FFFF]/20 hover:border-[#00FFFF]/50 transition-colors"
+                        className="p-2 rounded-lg bg-[var(--bg-secondary)] hover:bg-[var(--border)] transition-colors"
                     >
-                        <ChevronLeft className="w-5 h-5 text-[#00FFFF]" />
+                        <ChevronLeft className="w-5 h-5 text-[var(--text-secondary)]" />
                     </button>
-                    <span className="text-lg font-semibold text-white min-w-[160px] text-center">
+                    <span className="text-lg font-semibold text-[var(--text-primary)] min-w-[160px] text-center">
                         {currentDate.toLocaleString('default', { month: 'long', year: 'numeric' })}
                     </span>
                     <button
                         onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1))}
-                        className="p-2 rounded-xl bg-[#1A1A2E] border border-[#00FFFF]/20 hover:border-[#00FFFF]/50 transition-colors"
+                        className="p-2 rounded-lg bg-[var(--bg-secondary)] hover:bg-[var(--border)] transition-colors"
                     >
-                        <ChevronRight className="w-5 h-5 text-[#00FFFF]" />
+                        <ChevronRight className="w-5 h-5 text-[var(--text-secondary)]" />
                     </button>
                 </div>
             </div>
 
-            <div className="glass-card overflow-hidden">
-                <div className="grid grid-cols-7 border-b border-[#00FFFF]/20">
+            <div className="card overflow-hidden">
+                <div className="grid grid-cols-7 border-b border-[var(--border)]">
                     {weekDays.map(day => (
-                        <div key={day} className="p-3 text-center font-semibold text-[#00FFFF] text-sm">
+                        <div key={day} className="p-3 text-center font-semibold text-[var(--accent)] text-sm">
                             {day}
                         </div>
                     ))}
@@ -119,10 +117,10 @@ export default function CalendarPage() {
                         return (
                             <div
                                 key={idx}
-                                className={`min-h-[100px] p-2 border-b border-r border-[#00FFFF]/10 transition-colors ${!day.isCurrentMonth ? 'bg-[#0A0A0F]/50' : ''
-                                    } ${isToday ? 'bg-[#00FFFF]/10' : ''}`}
+                                className={`min-h-[100px] p-2 border-b border-r border-[var(--border)] transition-colors ${!day.isCurrentMonth ? 'bg-[var(--bg-secondary)]/30' : ''
+                                    } ${isToday ? 'bg-[var(--accent)]/10' : ''}`}
                             >
-                                <div className={`text-right mb-1 text-sm ${isToday ? 'font-bold text-[#00FFFF]' : 'text-[#888]'
+                                <div className={`text-right mb-1 text-sm ${isToday ? 'font-bold text-[var(--accent)]' : 'text-[var(--text-secondary)]'
                                     }`}>
                                     {day.date.getDate()}
                                 </div>
@@ -132,9 +130,9 @@ export default function CalendarPage() {
                                             key={event.id}
                                             className={`text-xs p-1 rounded truncate ${event.type === 'task'
                                                     ? event.status === 'completed'
-                                                        ? 'bg-[#00FF88]/20 text-[#00FF88] border border-[#00FF88]/30'
-                                                        : 'bg-[#00FFFF]/20 text-[#00FFFF] border border-[#00FFFF]/30'
-                                                    : 'bg-[#FFCC00]/20 text-[#FFCC00] border border-[#FFCC00]/30'
+                                                        ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                                                        : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                                                    : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
                                                 }`}
                                             title={event.title}
                                         >
@@ -142,7 +140,7 @@ export default function CalendarPage() {
                                         </div>
                                     ))}
                                     {dayEvents.length > 2 && (
-                                        <div className="text-xs text-[#888] text-center">
+                                        <div className="text-xs text-[var(--text-secondary)] text-center">
                                             +{dayEvents.length - 2} more
                                         </div>
                                     )}

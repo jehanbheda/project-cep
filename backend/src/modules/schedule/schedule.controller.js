@@ -1,4 +1,5 @@
 const scheduleService = require('./schedule.service.js')
+const Task = require('../../models/Task.js')
 
 const getTodaySchedule = async (req, res, next) => {
   try {
@@ -13,7 +14,11 @@ const regenerateSchedule = async (req, res, next) => {
   try {
     const redisClient = req.app.get('redis')
     const result = await scheduleService.regenerateSchedule(req.userId, redisClient)
-    res.status(200).json({ success: true, ...result })
+    res.status(200).json({
+      success: true,
+      ...result,
+      needsRegenerate: result.failedSkippedCount > 0
+    })
   } catch (err) {
     next(err)
   }
@@ -28,10 +33,10 @@ const completeTask = async (req, res, next) => {
       actualDurationMin
     )
     res.status(200).json({
-      success:        true,
-      message:        'Task completed',
-      task:           result.task,
-      needsFeedback:  result.needsFeedback
+      success: true,
+      message: 'Task completed',
+      task: result.task,
+      needsFeedback: result.needsFeedback
     })
   } catch (err) {
     next(err)
@@ -42,10 +47,10 @@ const missTask = async (req, res, next) => {
   try {
     const result = await scheduleService.missTask(req.params.taskId, req.userId)
     res.status(200).json({
-      success:        true,
-      message:        result.addedToBuffer ? 'Task missed and added to buffer' : 'Task marked as missed',
-      task:           result.task,
-      addedToBuffer:  result.addedToBuffer
+      success: true,
+      message: result.addedToBuffer ? 'Task missed and added to buffer' : 'Task marked as missed',
+      task: result.task,
+      addedToBuffer: result.addedToBuffer
     })
   } catch (err) {
     next(err)
@@ -58,7 +63,23 @@ const skipTask = async (req, res, next) => {
     res.status(200).json({
       success: true,
       message: 'Task skipped. Dependent tasks blocked.',
-      task:    result.task
+      task: result.task
+    })
+  } catch (err) {
+    next(err)
+  }
+}
+
+const getTaskStatus = async (req, res, next) => {
+  try {
+    const failedSkippedCount = await Task.countDocuments({
+      userId: req.userId,
+      status: { $in: ['failed', 'skipped'] }
+    })
+    res.status(200).json({
+      success: true,
+      failedSkippedCount,
+      needsRegenerate: failedSkippedCount > 0
     })
   } catch (err) {
     next(err)
@@ -70,5 +91,6 @@ module.exports = {
   regenerateSchedule,
   completeTask,
   missTask,
-  skipTask
+  skipTask,
+  getTaskStatus
 }

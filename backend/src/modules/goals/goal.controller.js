@@ -4,7 +4,7 @@ const logger = require('../../utils/logger.js')
 const confirmGoal = async (req, res, next) => {
   try {
     const { goalData, tasks } = req.body
-    const userId      = req.userId
+    const userId = req.userId
     const redisClient = req.app.get('redis')
 
     if (!goalData || !goalData.title) {
@@ -26,8 +26,8 @@ const confirmGoal = async (req, res, next) => {
     res.status(201).json({
       success: true,
       message: `Goal saved with ${result.tasks.length} tasks. RL scheduling queued.`,
-      goal:    result.goal,
-      tasks:   result.tasks
+      goal: result.goal,
+      tasks: result.tasks
     })
   } catch (err) {
     next(err)
@@ -63,12 +63,13 @@ const getGoalById = async (req, res, next) => {
 
 const deleteGoal = async (req, res, next) => {
   try {
-    const result = await goalService.deleteGoal(req.params.goalId, req.userId)
+    const redisClient = req.app.get('redis')
+    const result = await goalService.deleteGoal(req.params.goalId, req.userId, redisClient)
     res.status(200).json({
-      success:        true,
-      message:        'Goal deleted successfully',
+      success: true,
+      message: result.message,
       completionRate: result.completionRate,
-      tasksDeleted:   result.tasksDeleted
+      tasksDeleted: result.tasksDeleted
     })
   } catch (err) {
     next(err)

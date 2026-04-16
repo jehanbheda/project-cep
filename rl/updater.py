@@ -5,6 +5,8 @@ Q-value update layer for the Cognitive-Aware Task Scheduler.
 Single entry point: update(...)
 No decision logic. No agent sampling. Only reward computation and Bellman updates.
 All Q-table I/O goes through interface.py (qtable_reader + qtable_writer).
+
+FIX #5: No timezone changes needed (already using naive datetimes)
 """
 
 from interface import qtable_reader, qtable_writer
@@ -13,9 +15,9 @@ from interface import qtable_reader, qtable_writer
 # HYPERPARAMETERS
 # ─────────────────────────────────────────────
 
-ALPHA         = 0.1
-GAMMA         = 0.9
-REWARD_CLIP   = (-5.0, 5.0)
+ALPHA = 0.1
+GAMMA = 0.9
+REWARD_CLIP = (-5.0, 5.0)
 
 # ─────────────────────────────────────────────
 # REWARD TABLES
@@ -23,8 +25,8 @@ REWARD_CLIP   = (-5.0, 5.0)
 
 BASE_REWARD = {
     "completed": +2.0,
-    "failed":    -1.0,
-    "skipped":   -0.5,
+    "failed": -1.0,
+    "skipped": -0.5,
 }
 
 # time accuracy bonus — keyed by (ratio_lower, ratio_upper): reward
@@ -42,7 +44,7 @@ FATIGUE_BONUS_TABLE = [
     (1,  +0.5),
     (3,   0.0),
     (5,  -0.5),
-    (999,-1.5),
+    (999, -1.5),
 ]
 
 FEEDBACK_PENALTY = {
@@ -72,7 +74,7 @@ AGENT_WEIGHTS = {
     "duration":     (1.0,  1.0,   0.5,    1.0),
     "time":         (1.0,  0.3,   0.5,    1.0),
     "break":        (1.0,  0.3,   1.5,    1.0),
-    "context_switch":(1.0, 0.2,   0.8,    1.0),
+    "context_switch": (1.0, 0.2,   0.8,    1.0),
 }
 
 # sigma decay per agent — same as agents.py, kept here for updater's sigma recalculation
@@ -167,11 +169,12 @@ def _compute_reward(
 ) -> float:
     w_base, w_time, w_fatigue, w_feedback = AGENT_WEIGHTS[agent_name]
 
-    base     = _base_reward(outcome)                                           * w_base
+    base = _base_reward(outcome) * w_base
     time_acc = _time_accuracy_bonus(outcome, actual_duration_min,
-                                    scheduled_duration_min)                    * w_time
-    fatigue  = _fatigue_bonus(fatigue_before, fatigue_after)                   * w_fatigue
-    feedback_pen = _feedback_penalty_for_agent(agent_name, feedback)           * w_feedback
+                                    scheduled_duration_min) * w_time
+    fatigue = _fatigue_bonus(fatigue_before, fatigue_after) * w_fatigue
+    feedback_pen = _feedback_penalty_for_agent(
+        agent_name, feedback) * w_feedback
 
     raw = base + time_acc + fatigue + feedback_pen
     return max(REWARD_CLIP[0], min(REWARD_CLIP[1], raw))
@@ -223,12 +226,13 @@ def _update_agent(
         # but guard anyway
         return
 
-    old_q       = taken_row["q_value"]
-    max_next_q  = max(r["q_value"] for r in q_rows)  # current state approximation
-    new_q       = _bellman(old_q, reward, max_next_q)
+    old_q = taken_row["q_value"]
+    max_next_q = max(r["q_value"]
+                     for r in q_rows)  # current state approximation
+    new_q = _bellman(old_q, reward, max_next_q)
 
     new_visit_count = taken_row["visit_count"] + 1
-    new_sigma       = _new_sigma(agent_name, new_visit_count)
+    new_sigma = _new_sigma(agent_name, new_visit_count)
 
     qtable_writer(
         collection,
@@ -288,7 +292,7 @@ def update(
 
     # outcome
     outcome:               str,        # "completed" | "failed" | "skipped"
-    actual_duration_min:   int | None, # None if not completed
+    actual_duration_min:   int | None,  # None if not completed
     scheduled_duration_min: int,
     fatigue_before:        int,        # raw 1–10
     fatigue_after:         int,        # raw 1–10
@@ -305,10 +309,14 @@ def update(
 
     # compute reward per agent independently
     agents_to_update = [
-        ("qtable_duration",       "duration",       duration_state,       duration_action),
-        ("qtable_time",           "time",            time_state,           time_action),
-        ("qtable_break",          "break",           break_state,          break_action),
-        ("qtable_context_switch", "context_switch",  context_switch_state, context_switch_action),
+        ("qtable_duration",       "duration",
+         duration_state,       duration_action),
+        ("qtable_time",           "time",
+         time_state,           time_action),
+        ("qtable_break",          "break",
+         break_state,          break_action),
+        ("qtable_context_switch", "context_switch",
+         context_switch_state, context_switch_action),
     ]
 
     for collection, agent_name, state, action in agents_to_update:

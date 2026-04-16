@@ -2,7 +2,8 @@
 orchestrator.py
 ---------------
 Single entry point for schedule generation.
-Tasks are spread EVENLY across available days until deadline.
+Tasks are packed consecutively with no daily hour limits.
+RL agents learn optimal timing through feedback.
 NO COLLISIONS between tasks from different goals.
 """
 
@@ -20,16 +21,9 @@ SECTION_CEILING = {
     2: {"multiplier": 1.5, "break_budget": 30},
 }
 
-# Time blocks (2-hour slots from 8 AM to 10 PM)
-TIME_SLOTS = [
-    (8, 0, 10, 0),     # 8:00 - 10:00
-    (10, 0, 12, 0),    # 10:00 - 12:00
-    (12, 0, 14, 0),    # 12:00 - 14:00
-    (14, 0, 16, 0),    # 14:00 - 16:00
-    (16, 0, 18, 0),    # 16:00 - 18:00
-    (18, 0, 20, 0),    # 18:00 - 20:00
-    (20, 0, 22, 0),    # 20:00 - 22:00
-]
+# Working hours: 8:00 AM to 10:00 PM (14 hours available)
+WORKING_HOURS_START = 8
+WORKING_HOURS_END = 22
 
 
 # ─────────────────────────────────────────────
@@ -80,21 +74,38 @@ def _hour_to_block(hour: int) -> int:
     return 0
 
 
+def _get_day_end(current_date: datetime) -> datetime:
+    """Return datetime for 10:00 PM on the given date."""
+    return current_date.replace(hour=WORKING_HOURS_END, minute=0, second=0, microsecond=0)
+
+
+def _minutes_until_day_end(current_datetime: datetime) -> int:
+    """Calculate minutes remaining until 10:00 PM."""
+    day_end = _get_day_end(current_datetime)
+    remaining = (day_end - current_datetime).total_seconds() / 60
+    return max(0, int(remaining))
+
+
 # ─────────────────────────────────────────────
 # GLOBAL TIME SLOT MANAGER (shared across ALL goals)
 # ─────────────────────────────────────────────
 
 class GlobalTimeSlotManager:
-    """Manages time slots across ALL days and ALL goals to prevent collisions."""
+    """
+    Manages time slots across ALL days and ALL goals to prevent collisions.
+    Uses packed scheduling: tasks placed consecutively with no fixed slot boundaries.
+    Working hours: 8:00 AM to 10:00 PM.
+    """
 
     def __init__(self):
-        # Key: date string (YYYY-MM-DD), Value: list of used (start, end) tuples for that day
         self.used_slots_by_day = {}
 
-    def get_available_slot(self, date: datetime, duration_min: int) -> datetime:
-        """Find the next available time slot on a specific date."""
+    def clear(self):
+        """Clear all used slots - called when regenerating schedule."""
+        self.used_slots_by_day = {}
 
-        # Use string format for dictionary key (YYYY-MM-DD)
+    def get_available_slot(self, date: datetime, duration_min: int) -> datetime | None:
+        """Find the next available time slot on a specific date using packed scheduling."""
         date_key = date.strftime('%Y-%m-%d')
 
         if date_key not in self.used_slots_by_day:
@@ -102,33 +113,32 @@ class GlobalTimeSlotManager:
 
         used_slots = self.used_slots_by_day[date_key]
 
-        for slot_start_hour, slot_start_min, slot_end_hour, slot_end_min in TIME_SLOTS:
-            slot_start = date.replace(
-                hour=slot_start_hour, minute=slot_start_min, second=0, microsecond=0)
-            slot_end = date.replace(
-                hour=slot_end_hour, minute=slot_end_min, second=0, microsecond=0)
-            slot_duration = int((slot_end - slot_start).total_seconds() / 60)
+        day_start = date.replace(
+            hour=WORKING_HOURS_START, minute=0, second=0, microsecond=0)
+        day_end = _get_day_end(date)
 
-            if duration_min > slot_duration:
-                continue
+        if not used_slots:
+            candidate_start = day_start
+        else:
+            sorted_slots = sorted(used_slots, key=lambda x: x[0])
+            first_start = sorted_slots[0][0]
+            if first_start > day_start:
+                candidate_start = day_start
+            else:
+                candidate_start = sorted_slots[0][1]
+                for i in range(1, len(sorted_slots)):
+                    if sorted_slots[i][0] > candidate_start:
+                        break
+                    candidate_start = max(candidate_start, sorted_slots[i][1])
 
-            collision = False
-            for used_start, used_end in used_slots:
-                if not (slot_end <= used_start or slot_start >= used_end):
-                    collision = True
-                    break
+        task_end = candidate_start + timedelta(minutes=duration_min)
 
-            if not collision:
-                task_end = slot_start + timedelta(minutes=duration_min)
-                used_slots.append((slot_start, task_end))
-                return slot_start
-
-        return None
-
-    def reset_day(self, date: datetime):
-        """Reset used slots for a specific day (when moving to next day)."""
-        date_key = date.strftime('%Y-%m-%d')
-        self.used_slots_by_day[date_key] = []
+        if task_end <= day_end:
+            self.used_slots_by_day[date_key].append(
+                (candidate_start, task_end))
+            return candidate_start
+        else:
+            return None
 
 
 # ─────────────────────────────────────────────
@@ -150,115 +160,78 @@ def _check_feasibility(tasks: list[dict], now: datetime, deadline: datetime) -> 
 
 
 # ─────────────────────────────────────────────
-# SPREAD TASKS EVENLY ACROSS DAYS (NO COLLISIONS)
+# SPREAD TASKS ACROSS DAYS (PACKED SCHEDULE, NO DAILY LIMIT)
 # ─────────────────────────────────────────────
 
 def _distribute_across_days_with_slots(
     ordered_tasks: list[dict],
     start_date: datetime,
     deadline: datetime,
-    hours_per_day: float,
     global_slot_manager: GlobalTimeSlotManager
 ) -> tuple[list[dict], list[dict]]:
-    """
-    Spread tasks EVENLY across all available days until deadline.
-    Uses GLOBAL slot manager to prevent collisions across ALL goals.
-    """
     if not ordered_tasks:
         return [], []
 
-    # Calculate available days until deadline
-    days_available = max(1, (deadline - start_date).days)
-
-    # Calculate total estimated hours
-    total_hours = sum(
-        (t["base_duration_min"] * SECTION_CEILING[t["difficulty"]]["multiplier"]) / 60
-        for t in ordered_tasks
-    )
-
-    # Calculate hours per day (spread evenly)
-    hours_per_day_limit = max(3, total_hours / days_available)
-    # Cap at 8 hours per day maximum (reasonable study limit)
-    hours_per_day_limit = min(hours_per_day_limit, 8)
-
-    print(f"  Days available until deadline: {days_available}")
-    print(f"  Total hours: {total_hours:.1f}h")
-    print(f"  Hours per day target: {hours_per_day_limit:.1f}h")
+    print(f"  Packed schedule mode: No daily hour limits")
+    print(
+        f"  Working hours: {WORKING_HOURS_START}:00 to {WORKING_HOURS_END}:00")
 
     tasks_with_days = []
     unschedulable_tasks = []
 
-    current_day = 0
-    day_hours_used = 0
-    current_date = start_date.replace(
-        hour=8, minute=0, second=0, microsecond=0)
+    current_day_offset = 0
 
     for task in ordered_tasks:
         task_duration_min = int(
             task["base_duration_min"] *
             SECTION_CEILING[task["difficulty"]]["multiplier"]
         )
-        task_duration_hours = task_duration_min / 60
 
-        # Calculate current date
-        current_date = start_date + timedelta(days=current_day)
+        max_days_to_try = 30
+        days_tried = 0
+        slot_found = False
 
-        # Check if current day is past deadline
-        if current_date > deadline:
-            unschedulable_tasks.append(task)
-            print(
-                f"  Task '{task.get('task_name', task['task_id'])}' cannot fit before deadline")
-            continue
-
-        # If adding this task exceeds daily limit, move to next day
-        if day_hours_used + task_duration_hours > hours_per_day_limit and day_hours_used > 0:
-            current_day += 1
-            day_hours_used = 0
-            current_date = start_date + timedelta(days=current_day)
+        while days_tried < max_days_to_try and not slot_found:
+            current_date = start_date + timedelta(days=current_day_offset)
+            current_date = current_date.replace(
+                hour=WORKING_HOURS_START, minute=0, second=0, microsecond=0)
 
             if current_date > deadline:
                 unschedulable_tasks.append(task)
-                continue
-
-        # Find time slot using GLOBAL slot manager (prevents collisions across goals)
-        slot_start = global_slot_manager.get_available_slot(
-            current_date, task_duration_min)
-
-        if slot_start is None:
-            # Try next day if no slot available
-            current_day += 1
-            day_hours_used = 0
-            current_date = start_date + timedelta(days=current_day)
-
-            if current_date > deadline:
-                unschedulable_tasks.append(task)
-                continue
+                print(
+                    f"  Task '{task.get('task_name', task['task_id'])}' cannot fit before deadline")
+                slot_found = True
+                break
 
             slot_start = global_slot_manager.get_available_slot(
                 current_date, task_duration_min)
 
-            if slot_start is None:
-                unschedulable_tasks.append(task)
-                print(
-                    f"  No time slot for task: {task.get('task_name', task['task_id'])}")
-                continue
+            if slot_start is not None:
+                task_end = slot_start + timedelta(minutes=task_duration_min)
 
-        task_end = slot_start + timedelta(minutes=task_duration_min)
+                task_copy = task.copy()
+                task_copy["scheduled_date"] = current_date
+                task_copy["scheduled_start"] = slot_start
+                task_copy["scheduled_end"] = task_end
+                task_copy["scheduled_duration_min"] = task_duration_min
 
-        task_copy = task.copy()
-        task_copy["scheduled_date"] = current_date
-        task_copy["scheduled_start"] = slot_start
-        task_copy["scheduled_end"] = task_end
-        task_copy["scheduled_duration_min"] = task_duration_min
+                tasks_with_days.append(task_copy)
+                slot_found = True
+            else:
+                current_day_offset += 1
+                days_tried += 1
 
-        tasks_with_days.append(task_copy)
-        day_hours_used += task_duration_hours
+        if not slot_found and days_tried >= max_days_to_try:
+            unschedulable_tasks.append(task)
+            print(
+                f"  Task '{task.get('task_name', task['task_id'])}' could not be scheduled")
 
-    actual_days_used = current_day + 1
-    print(
-        f"  Scheduled {len(tasks_with_days)} tasks across {actual_days_used} days")
-    print(
-        f"  Average tasks per day: {len(tasks_with_days) / actual_days_used:.1f}")
+    actual_days_used = current_day_offset + 1
+    if tasks_with_days:
+        print(
+            f"  Scheduled {len(tasks_with_days)} tasks across {actual_days_used} days")
+    else:
+        print(f"  No tasks were scheduled")
 
     return tasks_with_days, unschedulable_tasks
 
@@ -273,12 +246,11 @@ def _build_sections(
     user_state: dict,
     now: datetime,
     deadline: datetime,
-    hours_per_day: float,
     global_slot_manager: GlobalTimeSlotManager
 ) -> tuple[list[dict], list[dict]]:
 
     tasks_with_days, unschedulable = _distribute_across_days_with_slots(
-        ordered_tasks, now, deadline, hours_per_day, global_slot_manager
+        ordered_tasks, now, deadline, global_slot_manager
     )
 
     sections = []
@@ -380,7 +352,7 @@ def _run(
     user_state: dict,
     now: datetime,
 ) -> dict:
-    # Fix timezone issues
+    # Ensure datetime is naive (local time, no timezone)
     if hasattr(now, 'tzinfo') and now.tzinfo:
         now = now.replace(tzinfo=None)
 
@@ -403,8 +375,6 @@ def _run(
     print(f"  Tasks in pool: {len(pool)}")
     print(f"  Deadline: {deadline.date()}")
     print(f"  Start: {now.date()}")
-
-    hours_per_day = 24  # Not used as hard limit - spreading logic handles distribution
 
     # Check feasibility
     infeasible = _check_feasibility(pool, now, deadline)
@@ -436,15 +406,15 @@ def _run(
 
     # Create GLOBAL slot manager to prevent collisions across ALL goals
     global_slot_manager = GlobalTimeSlotManager()
+    global_slot_manager.clear()
 
-    # Build sections with even distribution and collision prevention
+    # Build sections with packed schedule and no daily limits
     sections, deadline_unschedulable = _build_sections(
         ordered_tasks=ordered_tasks,
         user_id=user_id,
         user_state=user_state,
         now=now,
         deadline=deadline,
-        hours_per_day=hours_per_day,
         global_slot_manager=global_slot_manager,
     )
 
