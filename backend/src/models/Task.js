@@ -31,7 +31,8 @@ const taskSchema = new mongoose.Schema(
       enum: [
         'theory', 'coding', 'revision', 'practice',
         'reading', 'problem_solving', 'writing',
-        'exercise', 'project_work', 'research'
+        'exercise', 'project_work', 'research',
+        'listening'
       ],
       default: 'theory'
     },
@@ -83,7 +84,7 @@ const taskSchema = new mongoose.Schema(
       type: String,
       enum: [
         'pending', 'scheduled', 'in_progress',
-        'completed', 'failed', 'skipped', 'blocked'
+        'completed', 'failed', 'skipped', 'blocked', 'deleted'
       ],
       default: 'pending'
     },
@@ -91,7 +92,7 @@ const taskSchema = new mongoose.Schema(
     // RL fields — needed by orchestrator.py
     source: {
       type: String,
-      enum: ['new', 'pending', 'failed'],
+      enum: ['new', 'pending', 'failed', 'deleted'],
       default: 'new'
     },
     attemptCount: {

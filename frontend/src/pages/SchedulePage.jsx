@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { getTodaySchedule, regenerateSchedule, completeTask, missTask, skipTask, submitFeedback } from '../services/api';
 import toast from 'react-hot-toast';
-import { Calendar, RefreshCw, Clock, CheckCircle, XCircle, SkipForward, TrendingUp, Award, Zap, ChevronLeft, ChevronRight, Brain, Trophy, Target, AlertCircle, Info } from 'lucide-react';
+import { Calendar, RefreshCw, Clock, CheckCircle, XCircle, SkipForward, TrendingUp, Award, Zap, ChevronLeft, ChevronRight, Brain, Trophy, Target } from 'lucide-react';
 
 // Confetti Component
 function Confetti({ active }) {
@@ -79,8 +79,6 @@ export default function SchedulePage() {
     const [selectedAction, setSelectedAction] = useState(null);
     const [showConfetti, setShowConfetti] = useState(false);
     const [animateTaskId, setAnimateTaskId] = useState(null);
-    const [needsRegenerate, setNeedsRegenerate] = useState(false);
-    const [failedSkippedCount, setFailedSkippedCount] = useState(0);
     const [feedbackData, setFeedbackData] = useState({
         actualDuration: '',
         fatigueAfter: 5,
@@ -89,7 +87,6 @@ export default function SchedulePage() {
 
     useEffect(() => {
         fetchSchedule();
-        checkFailedSkippedTasks();
     }, []);
 
     const fetchSchedule = async () => {
@@ -123,38 +120,14 @@ export default function SchedulePage() {
         }
     };
 
-    const checkFailedSkippedTasks = async () => {
-        try {
-            const response = await fetch('/api/schedule/status', {
-                headers: {
-                    'Authorization': `Bearer ${localStorage.getItem('token')}`
-                }
-            });
-            if (response.ok) {
-                const data = await response.json();
-                setFailedSkippedCount(data.failedSkippedCount);
-                setNeedsRegenerate(data.failedSkippedCount > 0);
-            }
-        } catch (error) {
-            console.error('Failed to check task status:', error);
-        }
-    };
-
     const [sessionsByDate, setSessionsByDate] = useState({});
 
     const handleRegenerate = async () => {
         toast.loading('Regenerating schedule...', { id: 'regenerate' });
         try {
-            const response = await regenerateSchedule();
-            if (response.needsRegenerate !== undefined) {
-                setNeedsRegenerate(response.needsRegenerate);
-                setFailedSkippedCount(response.failedSkippedCount || 0);
-            }
+            await regenerateSchedule();
             toast.success('Schedule regeneration started!', { id: 'regenerate' });
-            setTimeout(() => {
-                fetchSchedule();
-                checkFailedSkippedTasks();
-            }, 3000);
+            setTimeout(fetchSchedule, 3000);
         } catch (error) {
             toast.error('Failed to regenerate', { id: 'regenerate' });
         }
@@ -195,7 +168,6 @@ export default function SchedulePage() {
             toast('Task skipped. It will appear in next schedule.');
             setTimeout(() => setAnimateTaskId(null), 500);
             fetchSchedule();
-            checkFailedSkippedTasks();
         } catch (error) {
             console.error('Error:', error);
             toast.error('Failed to skip task');
@@ -234,7 +206,6 @@ export default function SchedulePage() {
             setTimeout(() => setAnimateTaskId(null), 500);
             setShowFeedbackModal(false);
             fetchSchedule();
-            checkFailedSkippedTasks();
         } catch (error) {
             console.error('Error:', error);
             toast.error('Failed to process task');
@@ -309,7 +280,7 @@ export default function SchedulePage() {
             <Confetti active={showConfetti} />
 
             <div>
-                <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-4 gap-4">
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6 gap-4">
                     <div>
                         <h1 className="text-3xl font-bold text-[var(--text-primary)] mb-1">Schedule</h1>
                         <p className="text-[var(--text-secondary)] flex items-center gap-2">
@@ -322,49 +293,6 @@ export default function SchedulePage() {
                         Regenerate
                     </button>
                 </div>
-
-                {/* Notification Box */}
-                {needsRegenerate && (
-                    <div className="mb-4 p-4 rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 flex items-start gap-3">
-                        <AlertCircle className="w-5 h-5 text-yellow-600 dark:text-yellow-500 mt-0.5" />
-                        <div className="flex-1">
-                            <p className="text-sm font-medium text-yellow-800 dark:text-yellow-300">
-                                ⚠️ You have {failedSkippedCount} failed/skipped task{failedSkippedCount !== 1 ? 's' : ''}.
-                            </p>
-                            <p className="text-sm text-yellow-700 dark:text-yellow-400 mt-1">
-                                Click <strong>"Regenerate"</strong> to schedule {failedSkippedCount !== 1 ? 'them' : 'it'} again.
-                            </p>
-                        </div>
-                    </div>
-                )}
-
-                {!needsRegenerate && totalTasks > 0 && (
-                    <div className="mb-4 p-4 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 flex items-start gap-3">
-                        <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-500 mt-0.5" />
-                        <div className="flex-1">
-                            <p className="text-sm font-medium text-green-800 dark:text-green-300">
-                                ✅ All tasks are scheduled.
-                            </p>
-                            <p className="text-sm text-green-700 dark:text-green-400 mt-1">
-                                No pending issues. Keep up the good work!
-                            </p>
-                        </div>
-                    </div>
-                )}
-
-                {totalTasks === 0 && !needsRegenerate && (
-                    <div className="mb-4 p-4 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 flex items-start gap-3">
-                        <Info className="w-5 h-5 text-blue-600 dark:text-blue-500 mt-0.5" />
-                        <div className="flex-1">
-                            <p className="text-sm font-medium text-blue-800 dark:text-blue-300">
-                                📭 No tasks scheduled.
-                            </p>
-                            <p className="text-sm text-blue-700 dark:text-blue-400 mt-1">
-                                Create a goal to generate your personalized schedule.
-                            </p>
-                        </div>
-                    </div>
-                )}
 
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
                     <div className="card p-4">
@@ -596,7 +524,6 @@ export default function SchedulePage() {
                                 </div>
                             </div>
 
-                            {/* Complete: Only show duration input */}
                             {selectedAction === 'complete' && (
                                 <div className="mb-4">
                                     <label className="block text-sm font-medium text-[var(--text-secondary)] mb-2">Actual Duration (minutes)</label>
@@ -611,7 +538,6 @@ export default function SchedulePage() {
                                 </div>
                             )}
 
-                            {/* Fail: Show fatigue slider and feedback codes */}
                             {selectedAction === 'fail' && (
                                 <>
                                     <div className="mb-4">

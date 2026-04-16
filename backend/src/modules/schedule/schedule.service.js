@@ -46,10 +46,9 @@ const regenerateSchedule = async (userId, redisClient) => {
   })
   logger.info(`Deleted ${deleteResult.deletedCount} future sessions for user ${userId}`)
 
-  // Include pending, scheduled, failed, AND skipped
   const incompleteTasks = await Task.find({
     userId,
-    status: { $in: ['pending', 'scheduled', 'failed', 'skipped'] }
+    status: { $nin: ['completed'] }
   }).lean()
 
   const pendingTasks = incompleteTasks.filter(t => t.status === 'pending' || t.status === 'scheduled')
@@ -96,8 +95,6 @@ const regenerateSchedule = async (userId, redisClient) => {
     totalTasks: incompleteTasks.length,
     failedSkippedCount: failedTasks.length
   }
-
-  console.log('All incomplete tasks:', allIncompleteTasks.map(t => ({ title: t.title, status: t.status })))
 }
 
 const completeTask = async (taskId, userId, actualDurationMin) => {
